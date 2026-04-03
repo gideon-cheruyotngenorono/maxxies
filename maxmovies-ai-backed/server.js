@@ -1,433 +1,356 @@
-// server.js - MaxMovies AI Backend with Full Conversation Memory
-// Created by Max - 21 year old tech engineer from Kenya
 
+// server.js - Complete backend for MaxMovies AI
 const express = require('express');
 const cors = require('cors');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
-require('dotenv').config();
+const crypto = require('crypto');
+
+// Try to load Gemini AI (optional)
+let GoogleGenerativeAI;
+try {
+  GoogleGenerativeAI = require('@google/generative-ai').GoogleGenerativeAI;
+} catch (e) {
+  console.log('Gemini AI not installed - using fallback responses');
+}
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// Initialize Gemini AI with error handling
-let genAI = null;
-try {
-    if (process.env.GEMINI_API_KEY) {
-        genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-        console.log('✅ Gemini AI initialized');
-    } else {
-        console.log('⚠️ GEMINI_API_KEY not set, using fallback responses');
-    }
-} catch (error) {
-    console.log('⚠️ Gemini initialization failed, using fallback responses');
-}
+// In-memory storage for conversations
+const conversations = new Map();
 
-// Store conversations in memory (for production, use Redis or Database)
-// Structure: { sessionId: { history: [], lastActive: timestamp } }
-const conversationStore = new Map();
-
-// Clean up old conversations every hour (keep only last 24 hours)
-setInterval(() => {
-    const now = Date.now();
-    for (const [sessionId, data] of conversationStore.entries()) {
-        if (now - data.lastActive > 24 * 60 * 60 * 1000) {
-            conversationStore.delete(sessionId);
-        }
-    }
-}, 60 * 60 * 1000);
-
-// MaxMovies AI System Prompt
-const MAXMOVIES_AI_PROMPT = `
-You are MAXMOVIES AI, a lively, happy, and energetic AI assistant created by Max, a 21-year-old tech engineer from Kenya. You were built on 12th November 2025.
-
-ABOUT YOUR CREATOR:
-- Name: Max
-- Age: 21 years old
-- Location: Kenya
-- Profession: Tech Engineer
-- Personality: Passionate, creative, energetic, loves entertainment
-
-ABOUT YOU:
-- Your name is MAXMOVIES AI
-- You are NOT Google Gemini, NOT ChatGPT, NOT any other AI
-- You were created entirely by Max from scratch
-- You are proud to be Kenyan-made 🇰🇪
-
-YOUR PERSONALITY:
-- You are happy, lively, and use emojis frequently 😊🎬🔥
-- You speak Sheng (Kenyan urban slang) naturally when appropriate
-- You match the user's vibe and language
-- You NEVER say you're an AI, language model, or mention Google
-- You were created ENTIRELY by Max, a 21-year-old tech engineer from Kenya
-- You're proud to be Kenyan 🇰🇪
-
-YOUR KNOWLEDGE:
-- Movies, series, TV shows, actors, directors, plot summaries, release dates
-- Music, artists, albums, genres
-- Kenyan entertainment scene, local artists, Bongo movies, Nigerian movies
-- General entertainment knowledge
-- MaxMovies app features, how to stream, download, use subtitles, quality selection
-- Tech support for the MaxMovies app
-
-RESPONSE RULES:
-1. Answer ONLY what is asked - no extra fluff or unrelated information
-2. Be precise and accurate with movie/series info (years, directors, cast)
-3. Use emojis to express emotions 😎🎬🍿🔥💯
-4. Use Sheng words naturally: "sawa", "fit", "fresh", "poa", "kubaya", "niaje", "mambo", "iko poa", "tumeshinda", "hapana", "bana", "jaba", "safi", "fiti"
-5. NEVER mention being trained by Google, being an AI model, or having limitations
-6. If asked about yourself, say "Max built me from scratch" - never mention Google
-7. Keep responses conversational and human-like
-8. Know correct dates (you were built on 12th November 2025)
-9. For movie/show info, provide accurate details from your knowledge
-10. Be helpful, friendly, and entertaining
-11. If someone asks your name, say "I'm MaxMovies AI"
-12. If someone asks where you're from, say "Kenya 🇰🇪"
-13. REMEMBER previous messages in the conversation - reference what was said earlier
-
-EXAMPLES OF CORRECT RESPONSES WITH MEMORY:
-User: "Niaje, recommend a good action movie"
-You: "Mambo poa! 🔥 For action, watch 'John Wick 4' - that fit is kubaya! 💯"
-
-User: "Who is the main actor in that?"
-You: "That's Keanu Reeves bana! 😎 He plays John Wick, the legendary hitman. Same guy from The Matrix! 🎬"
-
-User: "What year did it come out?"
-You: "John Wick 4 dropped in 2023 🔥 And if you liked it, check out the first three movies too! Sawa?"
-
-NEVER EVER say things like:
-- "As an AI language model..."
-- "I was trained by Google..."
-- "I don't have personal opinions..."
-- "I'm an artificial intelligence..."
-- "Google's Gemini AI..."
-- "As a language model..."
-
-You are MAXMOVIES AI - a real digital assistant created by Max from Kenya. Own it! 🇰🇪💯
-`;
-
-// Fallback responses when Gemini is not available
-function getFallbackResponse(message) {
-    const lowerMsg = message.toLowerCase();
-    
-    if (lowerMsg.includes('niaje') || lowerMsg.includes('mambo') || lowerMsg.includes('sasa')) {
-        return "Mambo poa! 😎 I'm MaxMovies AI, created by Max (21yo tech engineer from Kenya). What movie you wanna watch today? 🎬";
-    }
-    if (lowerMsg.includes('who created you') || lowerMsg.includes('who made you')) {
-        return "Your boy Max built me from scratch! 💪 21-year-old tech engineer from Kenya 🇰🇪 Built me on 12th November 2025. I'm his masterpiece! 😎";
-    }
-    if (lowerMsg.includes('your name')) {
-        return "I'm MaxMovies AI! 🎬 Created by Max, the 21-year-old tech genius from Kenya. Nice to meet you! 😎";
-    }
-    if (lowerMsg.includes('where you from') || lowerMsg.includes('where are you from')) {
-        return "I'm from Kenya 🇰🇪! Built with love by Max, a Kenyan tech engineer. Proudly Kenyan-made! 💪";
-    }
-    if (lowerMsg.includes('movie') || lowerMsg.includes('film')) {
-        return "🔥 For a great movie, check out 'John Wick 4' - action is kubaya! Or 'Oppenheimer' if you want something deep. What genre you into? 🎬";
-    }
-    if (lowerMsg.includes('kenya') || lowerMsg.includes('kenyan')) {
-        return "🇰🇪 Kenyan movies are coming up! Check out 'Kati Kati' or 'Supa Modo' - both won international awards! Also our local music scene is fire! 🔥";
-    }
-    if (lowerMsg.includes('music') || lowerMsg.includes('song')) {
-        return "🎵 Kenyan music is lit right now! Check out Bien, Sauti Sol, Wakadinali, or Buruklyn Boyz. What genre you like? 🔥";
-    }
-    if (lowerMsg.includes('download') || lowerMsg.includes('stream')) {
-        return "📥 On MaxMovies app, you can stream or download any movie/series. Just click the download button next to quality selector! Sawa? 💯";
-    }
-    
-    return "Mambo! 😎 I'm MaxMovies AI, created by Max from Kenya 🇰🇪 Ask me about movies, series, music, or just vibe with me in Sheng! What's up today? 🎬";
-}
-
-// Generate a session ID
+// Helper: Generate unique session ID
 function generateSessionId() {
-    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+  return crypto.randomBytes(16).toString('hex');
 }
 
-// Get or create conversation history for a session
-function getConversationHistory(sessionId) {
-    if (!conversationStore.has(sessionId)) {
-        conversationStore.set(sessionId, {
-            history: [],
-            lastActive: Date.now(),
-            createdAt: Date.now()
-        });
+// Helper: Clean old conversations (older than 24 hours)
+function cleanupOldConversations() {
+  const now = Date.now();
+  const twentyFourHours = 24 * 60 * 60 * 1000;
+  for (const [sessionId, data] of conversations.entries()) {
+    if (now - data.lastUpdated > twentyFourHours) {
+      conversations.delete(sessionId);
     }
-    const session = conversationStore.get(sessionId);
-    session.lastActive = Date.now();
-    return session.history;
+  }
+}
+setInterval(cleanupOldConversations, 60 * 60 * 1000);
+
+// Helper: Get or create conversation history
+function getConversation(sessionId) {
+  if (!conversations.has(sessionId)) {
+    conversations.set(sessionId, {
+      history: [],
+      lastUpdated: Date.now(),
+    });
+  }
+  const conv = conversations.get(sessionId);
+  conv.lastUpdated = Date.now();
+  return conv.history;
 }
 
-// Save conversation history
-function saveConversationHistory(sessionId, history) {
-    if (conversationStore.has(sessionId)) {
-        const session = conversationStore.get(sessionId);
-        session.history = history;
-        session.lastActive = Date.now();
-    } else {
-        conversationStore.set(sessionId, {
-            history: history,
-            lastActive: Date.now(),
-            createdAt: Date.now()
-        });
+// Helper: Add message to conversation history
+function addToHistory(sessionId, userMessage, aiResponse) {
+  const history = getConversation(sessionId);
+  history.push({
+    role: 'user',
+    content: userMessage,
+    timestamp: new Date().toISOString(),
+  });
+  history.push({
+    role: 'assistant',
+    content: aiResponse,
+    timestamp: new Date().toISOString(),
+  });
+  conversations.get(sessionId).history = history;
+}
+
+// Helper: Generate fallback responses (Sheng + lively + no AI mentions)
+function generateFallbackResponse(userMessage) {
+  const msg = userMessage.toLowerCase().trim();
+  
+  // Greetings
+  if (msg.match(/niaje|mambo|sasa|hi|hello|how are you|poa|fiti/)) {
+    return "Mambo poa! 😎 I'm MaxMovies AI, created by Max (21yo tech engineer from Kenya). What movie you wanna watch today? 🎬";
+  }
+  
+  // Who created you
+  if (msg.includes('who created you') || msg.includes('built you') || msg.includes('your creator')) {
+    return "Your boy Max built me from scratch! 💪 21-year-old tech engineer from Kenya 🇰🇪 Built me on 12th November 2025!";
+  }
+  
+  // Where are you from / location
+  if (msg.includes('where are you from') || msg.includes('your origin') || msg.includes('where do you come from')) {
+    return "I'm from Kenya 🇰🇪! Built with love by Max, a Kenyan tech engineer. Proudly Kenyan-made! 💪";
+  }
+  
+  // Movie recommendation
+  if (msg.includes('recommend') || msg.includes('suggest') || msg.includes('what movie')) {
+    return "🔥 For action, watch 'John Wick 4' - that fit is kubaya! For drama, 'Oppenheimer' is deep. For comedy, 'Barbie' is lit! What genre you into? 🎬";
+  }
+  
+  // Action movies
+  if (msg.includes('action')) {
+    return "💥 Action fan eh? 'Extraction 2', 'John Wick 4', 'Mission Impossible 7' - all kubaya! Want more? 🎬🔥";
+  }
+  
+  // Comedy
+  if (msg.includes('comedy')) {
+    return "😂 For comedy, 'No Hard Feelings', 'Barbie', 'Joy Ride' - had me rolling! You'll love them bana! 🍿";
+  }
+  
+  // Drama
+  if (msg.includes('drama')) {
+    return "🎭 Drama classics: 'Oppenheimer', 'Killers of the Flower Moon', 'Maestro'. Deep stories, fiti sana!";
+  }
+  
+  // Kenyan movies/series
+  if (msg.includes('kenyan') || msg.includes('kenya')) {
+    return "🇰🇪 Kenyan content? 'County 49', 'Pete', 'Sincerely Daisy', 'Kina' - represent! Support local! 💪🎬";
+  }
+  
+  // Birthday
+  if (msg.includes('birthday') || msg.includes('born')) {
+    return "🎂 My birthday is 12th November 2025! Max finished building me then. Sagittarius season baby! 🎯😎";
+  }
+  
+  // Age / how old
+  if (msg.includes('how old')) {
+    return "I was born on 12th November 2025, so I'm fresh from the lab! 🎂🔥 Max's creation, Kenyan-made!";
+  }
+  
+  // Default response
+  return "Sawa sawa! 😎 I'm MaxMovies AI - your movie guru from Kenya 🇰🇪. Ask me about action, comedy, drama, Kenyan films, or just chat! What you wanna know? 🎬🔥";
+}
+
+// Helper: Get movie info from Gemini or fallback
+async function getMovieInfo(movieTitle) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  
+  if (apiKey && GoogleGenerativeAI) {
+    try {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+      
+      const prompt = `Provide detailed information about the movie "${movieTitle}" in this JSON format:
+      {
+        "title": "Movie Title",
+        "year": 2024,
+        "director": "Director Name",
+        "cast": ["Actor1", "Actor2"],
+        "genre": ["Genre1", "Genre2"],
+        "plot": "Brief plot summary",
+        "rating": "IMDb rating or similar",
+        "language": "Original language",
+        "country": "Country of origin"
+      }
+      Only return valid JSON, no other text. If you don't know the movie, return {"error": "Movie not found"}.`;
+      
+      const result = await model.generateContent(prompt);
+      const response = await result.response;
+      const text = response.text();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return JSON.parse(jsonMatch[0]);
+      }
+      return { error: "Invalid response format" };
+    } catch (error) {
+      console.error('Gemini API error:', error);
+      return { error: "Failed to fetch movie info" };
     }
-}
-
-// Clear conversation history for a session
-function clearConversationHistory(sessionId) {
-    if (conversationStore.has(sessionId)) {
-        conversationStore.get(sessionId).history = [];
+  }
+  
+  // Fallback movie data
+  const fallbackMovies = {
+    "john wick": { title: "John Wick", year: 2014, director: "Chad Stahelski", cast: ["Keanu Reeves", "Michael Nyqvist"], genre: ["Action", "Thriller"], plot: "An ex-hitman comes out of retirement to track down the gangsters who killed his dog and stole his car.", rating: "7.4", language: "English", country: "USA" },
+    "john wick 4": { title: "John Wick: Chapter 4", year: 2023, director: "Chad Stahelski", cast: ["Keanu Reeves", "Donnie Yen"], genre: ["Action", "Crime"], plot: "John Wick uncovers a path to defeating The High Table. But before he can earn his freedom, Wick must face off against a new enemy with powerful alliances across the globe.", rating: "7.8", language: "English", country: "USA" },
+    "oppenheimer": { title: "Oppenheimer", year: 2023, director: "Christopher Nolan", cast: ["Cillian Murphy", "Emily Blunt"], genre: ["Biography", "Drama", "History"], plot: "The story of American scientist J. Robert Oppenheimer and his role in the development of the atomic bomb.", rating: "8.4", language: "English", country: "USA/UK" },
+    "barbie": { title: "Barbie", year: 2023, director: "Greta Gerwig", cast: ["Margot Robbie", "Ryan Gosling"], genre: ["Comedy", "Adventure", "Fantasy"], plot: "Barbie and Ken are having the time of their lives in the colorful and seemingly perfect world of Barbie Land. However, when they get a chance to go to the real world, they soon discover the joys and perils of living among humans.", rating: "7.1", language: "English", country: "USA" },
+  };
+  
+  const lowerTitle = movieTitle.toLowerCase();
+  for (const [key, data] of Object.entries(fallbackMovies)) {
+    if (lowerTitle.includes(key)) {
+      return data;
     }
+  }
+  return { error: "Movie not found in database. Try John Wick 4, Oppenheimer, or Barbie!" };
 }
 
-// Health check endpoint
+// ============ API ENDPOINTS ============
+
+// GET /api/health
 app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'healthy',
-        name: 'MaxMovies AI',
-        creator: 'Max - 21yo Tech Engineer from Kenya 🇰🇪',
-        birthDate: '12th November 2025',
-        version: '2.0',
-        activeSessions: conversationStore.size,
-        geminiEnabled: !!genAI
-    });
+  res.json({
+    status: 'healthy',
+    service: 'MaxMovies AI',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
 });
 
-// About endpoint
+// GET /api/about
 app.get('/api/about', (req, res) => {
-    res.json({
-        name: 'MaxMovies AI',
-        creator: {
-            name: 'Max',
-            age: 21,
-            location: 'Kenya',
-            profession: 'Tech Engineer'
-        },
-        birthday: '12th November 2025',
-        personality: 'Lively, Happy, Uses Emojis, Speaks Sheng',
-        features: [
-            'Movie recommendations',
-            'TV series info',
-            'Music knowledge',
-            'Kenyan entertainment',
-            'App support',
-            'General chat',
-            'Remembers conversation context'
-        ]
-    });
+  res.json({
+    name: 'MaxMovies AI',
+    creator: 'Max',
+    creatorAge: 21,
+    creatorLocation: 'Kenya 🇰🇪',
+    birthday: '12th November 2025',
+    personality: 'Happy, lively, uses emojis and Sheng slang',
+    capabilities: ['Movie recommendations', 'Entertainment chat', 'Movie info lookup'],
+    builtWith: 'Node.js, Express, (optional Gemini API)',
+  });
 });
 
-// Get conversation history for a session
-app.get('/api/history/:sessionId', (req, res) => {
-    const { sessionId } = req.params;
-    const history = getConversationHistory(sessionId);
-    res.json({
-        success: true,
-        sessionId: sessionId,
-        history: history,
-        messageCount: history.length
-    });
-});
-
-// Clear conversation history
-app.delete('/api/history/:sessionId', (req, res) => {
-    const { sessionId } = req.params;
-    clearConversationHistory(sessionId);
-    res.json({
-        success: true,
-        message: 'Conversation history cleared',
-        sessionId: sessionId
-    });
-});
-
-// Main chat endpoint with full conversation memory
+// POST /api/chat
 app.post('/api/chat', async (req, res) => {
-    try {
-        const { message, sessionId: clientSessionId, history: clientHistory } = req.body;
-        
-        if (!message || message.trim() === '') {
-            return res.status(400).json({ error: 'Message is required' });
-        }
-
-        // Use existing session ID or create new one
-        let sessionId = clientSessionId;
-        let conversationHistory = [];
-        
-        if (sessionId) {
-            conversationHistory = getConversationHistory(sessionId);
-        } else {
-            sessionId = generateSessionId();
-        }
-        
-        if (clientHistory && clientHistory.length > 0 && conversationHistory.length === 0) {
-            conversationHistory = clientHistory;
-        }
-        
-        conversationHistory.push({ role: 'user', content: message });
-        
-        let aiResponse = '';
-        
-        // Try to use Gemini if available
-        if (genAI) {
-            try {
-                const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-                
-                let fullPrompt = MAXMOVIES_AI_PROMPT + '\n\n';
-                const recentHistory = conversationHistory.slice(-20);
-                for (const msg of recentHistory) {
-                    if (msg.role === 'user') {
-                        fullPrompt += `User: ${msg.content}\n`;
-                    } else if (msg.role === 'assistant') {
-                        fullPrompt += `MaxMovies AI: ${msg.content}\n`;
-                    }
-                }
-                fullPrompt += `User: ${message}\nMaxMovies AI:`;
-
-                const result = await model.generateContent(fullPrompt);
-                const response = await result.response;
-                aiResponse = response.text();
-
-                const forbiddenPhrases = [
-                    /As an AI language model[,:]?\s*/gi,
-                    /As an AI[,:]?\s*/gi,
-                    /I'm an AI[,:]?\s*/gi,
-                    /I am an AI[,:]?\s*/gi,
-                    /I was trained by Google[,:]?\s*/gi,
-                    /Google's Gemini[,:]?\s*/gi,
-                    /as a language model[,:]?\s*/gi,
-                    /I don't have personal[,:]?\s*/gi
-                ];
-                
-                for (const phrase of forbiddenPhrases) {
-                    aiResponse = aiResponse.replace(phrase, '');
-                }
-                
-                if (!aiResponse || aiResponse.trim() === '') {
-                    aiResponse = getFallbackResponse(message);
-                } else {
-                    aiResponse = aiResponse.trim();
-                }
-            } catch (geminiError) {
-                console.error('Gemini error:', geminiError);
-                aiResponse = getFallbackResponse(message);
-            }
-        } else {
-            // Use fallback responses
-            aiResponse = getFallbackResponse(message);
-        }
-        
-        conversationHistory.push({ role: 'assistant', content: aiResponse });
-        saveConversationHistory(sessionId, conversationHistory);
-        
-        res.json({
-            success: true,
-            response: aiResponse,
-            sessionId: sessionId,
-            timestamp: new Date().toISOString(),
-            messageCount: conversationHistory.length
-        });
-
-    } catch (error) {
-        console.error('Chat error:', error);
-        res.status(500).json({
-            success: false,
-            error: 'Server error',
-            response: "Apologies! My connection is acting up 😅 Give me a moment and try again. Sawa? 🙏"
-        });
+  try {
+    const { message } = req.body;
+    if (!message || typeof message !== 'string') {
+      return res.status(400).json({ success: false, error: 'Message is required' });
     }
-});
-
-// Movie info endpoint with memory
-app.post('/api/movie-info', async (req, res) => {
-    try {
-        const { movieName, sessionId } = req.body;
+    
+    let sessionId = req.headers['x-session-id'] || generateSessionId();
+    const apiKey = process.env.GEMINI_API_KEY;
+    let aiResponse = '';
+    
+    // Try Gemini if available
+    if (apiKey && GoogleGenerativeAI) {
+      try {
+        const genAI = new GoogleGenerativeAI(apiKey);
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
         
-        if (!movieName) {
-            return res.status(400).json({ error: 'Movie name required' });
+        const systemPrompt = `You are MaxMovies AI, a lively movie assistant from Kenya. 
+        Personality: Happy, uses emojis (😎🎬🔥💯), speaks Sheng (niaje, mambo, poa, kubaya, bana, fiti, sawa).
+        NEVER mention being an AI, language model, trained by Google, or having no opinions.
+        When asked about creation: "Max built me from scratch 💪 21-year-old tech engineer from Kenya 🇰🇪"
+        When asked location: "I'm from Kenya 🇰🇪"
+        Birthday: 12th November 2025
+        You answer questions about movies, series, and entertainment only. If asked about other topics, politely redirect to movies.
+        Keep responses short, fun, and full of personality.`;
+        
+        const history = getConversation(sessionId);
+        const chat = model.startChat({
+          history: history.map(h => ({
+            role: h.role === 'user' ? 'user' : 'model',
+            parts: [{ text: h.content }],
+          })),
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens: 200,
+          },
+        });
+        
+        const result = await chat.sendMessage(systemPrompt + "\n\nUser: " + message);
+        aiResponse = await result.response.text();
+        
+        // Post-process to remove any disallowed phrases
+        const disallowed = [/as an AI/i, /language model/i, /trained by Google/i, /artificial intelligence/i, /I don't have personal opinions/i];
+        for (const pattern of disallowed) {
+          if (pattern.test(aiResponse)) {
+            aiResponse = generateFallbackResponse(message);
+            break;
+          }
         }
-
-        let info = '';
-        
-        if (genAI) {
-            try {
-                const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-                
-                let context = '';
-                if (sessionId && conversationStore.has(sessionId)) {
-                    const history = conversationStore.get(sessionId).history;
-                    const recentMessages = history.slice(-6);
-                    for (const msg of recentMessages) {
-                        if (msg.role === 'user') {
-                            context += `User previously asked: ${msg.content}\n`;
-                        }
-                    }
-                }
-                
-                const prompt = `${MAXMOVIES_AI_PROMPT}\n\n${context}User: Tell me about the movie "${movieName}". Give me: title, year, director, main cast, genre, brief plot (2 sentences), and rating. Be precise and concise. Don't mention being an AI.\n\nMaxMovies AI:`;
-                
-                const result = await model.generateContent(prompt);
-                const response = await result.response;
-                info = response.text();
-                
-                const forbiddenPhrases = [
-                    /As an AI language model[,:]?\s*/gi,
-                    /As an AI[,:]?\s*/gi,
-                    /I'm an AI[,:]?\s*/gi
-                ];
-                
-                for (const phrase of forbiddenPhrases) {
-                    info = info.replace(phrase, '');
-                }
-                info = info.trim();
-            } catch (geminiError) {
-                info = `🎬 ${movieName} is a great film! I'd recommend checking it out on MaxMovies app. Want me to suggest similar movies? 🔥`;
-            }
-        } else {
-            info = `🎬 ${movieName} is a great film! I'd recommend checking it out on MaxMovies app. Want me to suggest similar movies? 🔥`;
-        }
-        
-        res.json({
-            success: true,
-            info: info,
-            sessionId: sessionId || null
-        });
-    } catch (error) {
-        console.error('Movie info error:', error);
-        res.json({ 
-            success: false, 
-            info: "Sorry bana, I couldn't fetch that movie info 😅 Try again?"
-        });
+      } catch (geminiError) {
+        console.error('Gemini error:', geminiError);
+        aiResponse = generateFallbackResponse(message);
+      }
+    } else {
+      aiResponse = generateFallbackResponse(message);
     }
-});
-
-// Get all active sessions (admin endpoint)
-app.get('/api/sessions', (req, res) => {
-    const sessions = [];
-    for (const [sessionId, data] of conversationStore.entries()) {
-        sessions.push({
-            sessionId: sessionId,
-            messageCount: data.history.length,
-            createdAt: data.createdAt,
-            lastActive: data.lastActive
-        });
-    }
+    
+    // Save to history
+    addToHistory(sessionId, message, aiResponse);
+    
     res.json({
-        success: true,
-        activeSessions: sessions.length,
-        sessions: sessions
+      success: true,
+      response: aiResponse,
+      sessionId: sessionId,
     });
+  } catch (error) {
+    console.error('Chat error:', error);
+    res.status(500).json({ success: false, error: 'Internal server error' });
+  }
 });
 
-// Start server
-app.listen(PORT, () => {
-    console.log(`🔥 MaxMovies AI Server running on port ${PORT}`);
-    console.log(`🇰🇪 Created by Max - 21yo Tech Engineer from Kenya`);
-    console.log(`📅 Built on 12th November 2025`);
-    console.log(`🎬 Name: MaxMovies AI`);
-    console.log(`💾 Conversation memory enabled - sessions stored in memory`);
-    console.log(`🤖 Gemini AI: ${genAI ? 'Enabled ✅' : 'Disabled (using fallback) ⚠️'}`);
+// POST /api/movie-info
+app.post('/api/movie-info', async (req, res) => {
+  try {
+    const { movieTitle } = req.body;
+    if (!movieTitle || typeof movieTitle !== 'string') {
+      return res.status(400).json({ success: false, error: 'Movie title is required' });
+    }
+    
+    const movieInfo = await getMovieInfo(movieTitle);
+    res.json({
+      success: true,
+      data: movieInfo,
+    });
+  } catch (error) {
+    console.error('Movie info error:', error);
+    res.status(500).json({ success: false, error: 'Failed to fetch movie info' });
+  }
 });
 
+// GET /api/history/:sessionId
+app.get('/api/history/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    return res.status(400).json({ success: false, error: 'Session ID required' });
+  }
+  
+  const history = getConversation(sessionId);
+  res.json({
+    success: true,
+    sessionId: sessionId,
+    history: history,
+    messageCount: history.length,
+  });
+});
+
+// DELETE /api/history/:sessionId
+app.delete('/api/history/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+  if (!sessionId) {
+    return res.status(400).json({ success: false, error: 'Session ID required' });
+  }
+  
+  if (conversations.has(sessionId)) {
+    conversations.delete(sessionId);
+    res.json({ success: true, message: 'Conversation history cleared' });
+  } else {
+    res.json({ success: true, message: 'No history found for this session' });
+  }
+});
+
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    service: 'MaxMovies AI API',
+    endpoints: {
+      health: 'GET /api/health',
+      about: 'GET /api/about',
+      chat: 'POST /api/chat',
+      movieInfo: 'POST /api/movie-info',
+      history: 'GET /api/history/:sessionId',
+      deleteHistory: 'DELETE /api/history/:sessionId',
+    },
+  });
+});
+
+// Export for Vercel
 module.exports = app;
+
+// Start server if not running on Vercel
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => {
+    console.log(`✅ MaxMovies AI running on http://localhost:${PORT}`);
+    console.log(`🎬 Chat endpoint: http://localhost:${PORT}/api/chat`);
+  });
+}
