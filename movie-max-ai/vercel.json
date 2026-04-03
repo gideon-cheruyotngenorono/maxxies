@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "name": "movie-max-ai",
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
+    }
+  ],
+  "env": {
+    "GEMINI_API_KEY": ""
+  }
+}
